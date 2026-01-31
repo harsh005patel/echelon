@@ -1,0 +1,9 @@
+node_modules/
+backend/training/__pycache__/
+backend/models/__pycache__/
+backend/__pycache__/
+.env
+*.log
+.DS_Store
+backend/data/raw/
+backend/models/weights/
