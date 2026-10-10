@@ -33,41 +33,53 @@ export default function Dashboard() {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             streamRef.current = stream;
 
-            // Initialize AudioContext
-            audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({
-                sampleRate: 16000,
-            });
+            // Initialize AudioContext (match backend 16kHz)
+            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+            const audioCtx = new AudioContextClass({ sampleRate: 16000 });
+            audioContextRef.current = audioCtx;
 
-            const source = audioContextRef.current.createMediaStreamSource(stream);
+            if (audioCtx.state === 'suspended') {
+                await audioCtx.resume();
+            }
+
+            const source = audioCtx.createMediaStreamSource(stream);
 
             // Create analyser for visualizer
-            const analyser = audioContextRef.current.createAnalyser();
+            const analyser = audioCtx.createAnalyser();
             analyser.fftSize = 256;
             source.connect(analyser);
             analyserRef.current = analyser;
 
-            // Create processor to extract raw data
-            processorRef.current = audioContextRef.current.createScriptProcessor(4096, 1, 1);
+            // Connect WS with status callbacks
+            const ws = connectWebSocket(
+                (data) => {
+                    handleServerMessage({ ...data, source: 'live' });
+                },
+                () => setIsConnected(true),
+                () => setIsConnected(false)
+            );
 
-            // Connect WS
-            const ws = connectWebSocket((data) => {
-                handleServerMessage({ ...data, source: 'live' });
-            });
+            // Create processor to extract raw PCM
+            const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+            processorRef.current = processor;
 
-            ws.onopen = () => setIsConnected(true);
-            ws.onclose = () => setIsConnected(false);
-
-            processorRef.current.onaudioprocess = (e) => {
+            processor.onaudioprocess = (e) => {
                 const inputData = e.inputBuffer.getChannelData(0);
                 const pcmData = convertFloat32ToInt16(inputData);
 
-                if (ws.readyState === WebSocket.OPEN) {
+                if (ws && ws.readyState === WebSocket.OPEN) {
                     ws.send(pcmData);
                 }
             };
 
-            analyser.connect(processorRef.current);
-            processorRef.current.connect(audioContextRef.current.destination);
+            // Connect: source -> analyser -> processor -> silentGain -> destination
+            // Using silent GainNode prevents microphone feedback loop into computer speakers
+            const silentGain = audioCtx.createGain();
+            silentGain.gain.value = 0;
+
+            analyser.connect(processor);
+            processor.connect(silentGain);
+            silentGain.connect(audioCtx.destination);
 
             setIsRecording(true);
         } catch (err) {
@@ -79,12 +91,15 @@ export default function Dashboard() {
     const stopRecording = () => {
         if (streamRef.current) {
             streamRef.current.getTracks().forEach(track => track.stop());
-        }
-        if (audioContextRef.current) {
-            audioContextRef.current.close();
+            streamRef.current = null;
         }
         if (processorRef.current) {
-            processorRef.current.disconnect();
+            try { processorRef.current.disconnect(); } catch (_) {}
+            processorRef.current = null;
+        }
+        if (audioContextRef.current) {
+            try { audioContextRef.current.close(); } catch (_) {}
+            audioContextRef.current = null;
         }
         disconnectWebSocket();
         setIsRecording(false);
@@ -221,7 +236,7 @@ export default function Dashboard() {
                         </div>
                     </div>
 
-                    <DetectionStatus result={currentResult} />
+                    <DetectionStatus result={currentResult} isRecording={isRecording} isUploading={isUploading} />
                 </div>
 
                 {/* Right Col: Alerts & History */}

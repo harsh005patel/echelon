@@ -37,35 +37,37 @@ class AudioPreprocessor:
         return nr.reduce_noise(y=audio, sr=self.sample_rate)
         
     def remove_silence(self, audio, frame_duration_ms=30):
-        """Remove silence using WebRTC VAD."""
-        # VAD requires 16-bit PCM samples
-        audio_pcm = (audio * 32767).astype(np.int16)
-        
-        n = int(self.sample_rate * (frame_duration_ms / 1000.0) * 2) # 2 bytes per sample
-        # We need to chunk into frames of specific duration (10, 20, or 30ms)
-        # WebRTC VAD only supports 8000, 16000, 32000, 48000 Hz
-        
-        # Simple energy based fallback if VAD fails or complex implementation needed
-        # But implementing frame-based VAD:
-        frames = []
-        # ... (Implementation detail: Generator for frames)
-        # For brevity in this snippet, using librosa.effects.split or similiar might be easier
-        # but prompt asked for webrtcvad.
-        
-        # Using librosa's trim/split for robustness and speed in this demo if VAD is complex
-        # but let's try a VAD wrapper logic or simple trim
-        return librosa.effects.trim(audio, top_db=20)[0]
+        """Remove silence safely without dropping short speech."""
+        if len(audio) == 0:
+            return audio
+        try:
+            trimmed, _ = librosa.effects.trim(audio, top_db=30)
+            if len(trimmed) < int(0.2 * self.sample_rate):
+                return audio
+            return trimmed
+        except Exception:
+            return audio
     
     def chunk_audio(self, audio, chunk_duration=3, overlap=0.5):
-        """Chunk audio into fixed segments."""
+        """Chunk audio into fixed segments, padding if shorter than chunk_duration."""
         chunk_length = int(chunk_duration * self.sample_rate)
+        if len(audio) == 0:
+            return np.array([])
+
+        if len(audio) < chunk_length:
+            pad_width = chunk_length - len(audio)
+            padded = np.pad(audio, (0, pad_width), mode='constant')
+            return np.array([padded])
+
         stride = int((chunk_duration - overlap) * self.sample_rate)
-        
         chunks = []
         for i in range(0, len(audio) - chunk_length + 1, stride):
             chunks.append(audio[i:i+chunk_length])
             
-        # Handle last chunk padding?
+        if not chunks:
+            padded = np.pad(audio[:chunk_length], (0, max(0, chunk_length - len(audio))), mode='constant')
+            chunks.append(padded)
+
         return np.array(chunks)
 
     def preprocess(self, audio_data):

@@ -41,9 +41,15 @@ class DetectionService:
             
             results = []
             
-            # If VAD removed everything, processed_chunks might be empty
+            # If silence or empty audio
             if len(processed_chunks) == 0:
-                 return {"status": "silence", "confidence": 0.0}
+                 return {
+                     "status": "silence",
+                     "is_deepfake": False,
+                     "confidence": 0.0,
+                     "process_time": time.time() - start_time,
+                     "individual_scores": {"cnn_lstm": 0.0, "resnet_se": 0.0, "rawnet": 0.0}
+                 }
 
             for chunk in processed_chunks:
                 # 3. Extract Features

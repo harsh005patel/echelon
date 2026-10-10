@@ -1,22 +1,34 @@
 let websocket = null;
 
-export const connectWebSocket = (onMessage) => {
-    if (websocket && websocket.readyState === WebSocket.OPEN) {
-        return websocket;
+export const connectWebSocket = (onMessage, onOpen, onClose) => {
+    if (websocket) {
+        try {
+            websocket.close();
+        } catch (_) {}
+        websocket = null;
     }
 
-    // Connect to backend
-    // In dev: localhost:8000
-    // In prod: window.location.host
+    // In local dev, Vite runs on port 5173 and backend on port 8000
+    // Connecting directly to localhost:8000 avoids Vite proxy buffering binary audio frames
+    const isDev = window.location.port === '5173' || window.location.hostname === 'localhost';
+    const host = isDev ? 'localhost:8000' : window.location.host;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws/audio`;
+    const wsUrl = `${protocol}//${host}/ws/audio`;
 
     websocket = new WebSocket(wsUrl);
+
+    websocket.onopen = (event) => {
+        if (onOpen) onOpen(event);
+    };
+
+    websocket.onclose = (event) => {
+        if (onClose) onClose(event);
+    };
 
     websocket.onmessage = (event) => {
         try {
             const data = JSON.parse(event.data);
-            onMessage(data);
+            if (onMessage) onMessage(data);
         } catch (e) {
             console.error("Error parsing WS message:", e);
         }
@@ -31,7 +43,9 @@ export const connectWebSocket = (onMessage) => {
 
 export const disconnectWebSocket = () => {
     if (websocket) {
-        websocket.close();
+        try {
+            websocket.close();
+        } catch (_) {}
         websocket = null;
     }
 };
