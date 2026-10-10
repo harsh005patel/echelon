@@ -1,0 +1,26 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "frontend": {
+      "path": "deepfake-voice-detector/frontend",
+      "bindings": [
+        {
+          "type": "service",
+          "service": "backend",
+          "format": "url",
+          "env": "BACKEND_URL"
+        }
+      ]
+    },
+    "backend": {
+      "path": "deepfake-voice-detector/backend"
+    }
+  },
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "/$1",
+      "service": "frontend"
+    }
+  ]
+}
