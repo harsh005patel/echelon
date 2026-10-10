@@ -15,7 +15,7 @@ from models.feature_extractor import FeatureExtractor
 def main():
     parser = argparse.ArgumentParser(description="Deepfake Voice Detector CLI")
     parser.add_argument("audio_path", help="Path to the audio file to analyze")
-    parser.add_argument("--weights_dir", default="models/weights", help="Directory containing model weights")
+    parser.add_argument("--weights_dir", default=None, help="Directory containing model weights")
     args = parser.parse_args()
 
     audio_path = args.audio_path

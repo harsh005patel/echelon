@@ -33,10 +33,14 @@ export default function AlertPanel({ history }) {
                                             {event.is_deepfake ? 'Deepfake Detected' : 'Authentic Audio'}
                                         </span>
                                         <span className="text-xs text-muted whitespace-nowrap ml-2">
-                                            {/* Assuming we might have timestamps later, for now just 'Now' or index if fast */}
-                                            #{i + 1}
+                                            {event.timestamp || `#${i + 1}`}
                                         </span>
                                     </div>
+                                    {event.fileName && (
+                                        <div className="text-xs text-muted truncate mb-1" title={event.fileName}>
+                                            File: {event.fileName}
+                                        </div>
+                                    )}
                                     <div className="flex justify-between text-xs text-muted">
                                         <span>Conf: {(event.confidence * 100).toFixed(1)}%</span>
                                         <span>{event.process_time ? `${(event.process_time * 1000).toFixed(0)}ms` : ''}</span>

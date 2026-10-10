@@ -9,8 +9,7 @@ export const connectWebSocket = (onMessage) => {
     // In dev: localhost:8000
     // In prod: window.location.host
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = 'localhost:8000'; // Hardcoded for dev, normally use relative or env
-    const wsUrl = `${protocol}//${host}/ws/audio`;
+    const wsUrl = `${protocol}//${window.location.host}/ws/audio`;
 
     websocket = new WebSocket(wsUrl);
 

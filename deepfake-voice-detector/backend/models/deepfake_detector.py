@@ -134,29 +134,86 @@ class RawNetModel(nn.Module):
 
 # --- Ensemble Wrapper ---
 class DeepfakeDetector:
-    def __init__(self, weights_dir="models/weights"):
+    def __init__(self, weights_dir=None):
+        self.weights_dir = self._resolve_weights_dir(weights_dir)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model1 = CNNLSTMModel().to(self.device)
         self.model2 = ResNetSEModel().to(self.device)
         self.model3 = RawNetModel().to(self.device)
         
-        self.weights_dir = weights_dir
         self._load_weights()
         
         self.model1.eval()
         self.model2.eval()
         self.model3.eval()
 
-    def _load_weights(self):
-        # In a real scenario, we would load state_dicts here.
-        # For this prototype, we'll initialize with random weights if files don't exist.
-        m1_path = os.path.join(self.weights_dir, "model1.pth")
-        if os.path.exists(m1_path):
-            self.model1.load_state_dict(torch.load(m1_path, map_location=self.device))
-        else:
-            logger.warning("Model 1 weights not found, using random init.")
+    def _resolve_weights_dir(self, requested_dir):
+        from utils.config import settings
+        candidates = []
+        if requested_dir:
+            candidates.append(requested_dir)
+        if hasattr(settings, "MODEL_PATH") and settings.MODEL_PATH:
+            candidates.append(settings.MODEL_PATH)
+        if hasattr(settings, "MODEL_PATH_FALLBACK") and settings.MODEL_PATH_FALLBACK:
+            candidates.append(settings.MODEL_PATH_FALLBACK)
 
-        # Similarly for others...
+        # Paths relative to this file (backend/models/deepfake_detector.py)
+        current_file_dir = os.path.dirname(os.path.abspath(__file__))
+        candidates.extend([
+            os.path.abspath(os.path.join(current_file_dir, "..", "..", "models")),
+            os.path.abspath(os.path.join(current_file_dir, "..", "..", "models", "weights")),
+            os.path.abspath(os.path.join(current_file_dir, "..", "weights")),
+            os.path.abspath(os.path.join(os.getcwd(), "models")),
+            os.path.abspath(os.path.join(os.getcwd(), "..", "models")),
+            os.path.abspath(os.path.join(os.getcwd(), "models", "weights")),
+            "/app/models/weights",
+            "/app/models",
+        ])
+
+        for c in candidates:
+            if c and os.path.isdir(c):
+                if any(os.path.exists(os.path.join(c, f"model{i}.pth")) for i in (1, 2, 3)):
+                    logger.info(f"Resolved weights directory: {c}")
+                    return c
+
+        fallback = requested_dir or getattr(settings, "MODEL_PATH", "models")
+        return fallback
+
+    def _load_single_model(self, model, filename, model_name):
+        path = os.path.join(self.weights_dir, filename)
+        if not os.path.exists(path):
+            logger.warning(f"{model_name} weights not found at {path}, using random initialization.")
+            return
+
+        try:
+            try:
+                ckpt = torch.load(path, map_location=self.device, weights_only=True)
+            except Exception:
+                ckpt = torch.load(path, map_location=self.device, weights_only=False)
+
+            if isinstance(ckpt, dict):
+                if "state_dict" in ckpt:
+                    ckpt = ckpt["state_dict"]
+                elif "model_state_dict" in ckpt:
+                    ckpt = ckpt["model_state_dict"]
+                elif "model" in ckpt and isinstance(ckpt["model"], dict):
+                    ckpt = ckpt["model"]
+
+            # Filter prefix 'module.' if trained with DataParallel
+            clean_ckpt = {}
+            for k, v in ckpt.items():
+                clean_k = k[7:] if k.startswith("module.") else k
+                clean_ckpt[clean_k] = v
+
+            model.load_state_dict(clean_ckpt, strict=False)
+            logger.info(f"Successfully loaded {model_name} weights from {path}")
+        except Exception as e:
+            logger.error(f"Failed to load {model_name} weights from {path}: {e}")
+
+    def _load_weights(self):
+        self._load_single_model(self.model1, "model1.pth", "Model 1 (CNN-LSTM)")
+        self._load_single_model(self.model2, "model2.pth", "Model 2 (ResNet-SE)")
+        self._load_single_model(self.model3, "model3.pth", "Model 3 (RawNet)")
         
     def predict(self, features, raw_audio):
         """

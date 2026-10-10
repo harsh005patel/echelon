@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Activity, Radio, Mic, MicOff, AlertTriangle, ShieldCheck, ShieldAlert } from 'lucide-react';
+import { Activity, Radio, Mic, MicOff, AlertTriangle, ShieldCheck, ShieldAlert, Upload, FileAudio, Loader2 } from 'lucide-react';
 import AudioVisualizer from './AudioVisualizer';
 import DetectionStatus from './DetectionStatus';
 import AlertPanel from './AlertPanel';
@@ -8,15 +8,17 @@ import { connectWebSocket, disconnectWebSocket } from '../services/webrtc';
 export default function Dashboard() {
     const [isRecording, setIsRecording] = useState(false);
     const [isConnected, setIsConnected] = useState(false);
-    // Detection state
+    const [isUploading, setIsUploading] = useState(false);
     const [currentResult, setCurrentResult] = useState(null);
     const [history, setHistory] = useState([]);
+    const [uploadError, setUploadError] = useState(null);
 
     // Audio Refs
     const audioContextRef = useRef(null);
     const streamRef = useRef(null);
     const processorRef = useRef(null);
     const analyserRef = useRef(null);
+    const fileInputRef = useRef(null);
 
     const toggleRecording = async () => {
         if (isRecording) {
@@ -33,7 +35,7 @@ export default function Dashboard() {
 
             // Initialize AudioContext
             audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({
-                sampleRate: 16000, // Match backend
+                sampleRate: 16000,
             });
 
             const source = audioContextRef.current.createMediaStreamSource(stream);
@@ -41,16 +43,15 @@ export default function Dashboard() {
             // Create analyser for visualizer
             const analyser = audioContextRef.current.createAnalyser();
             analyser.fftSize = 256;
-            source.connect(analyser); // source -> analyser
+            source.connect(analyser);
             analyserRef.current = analyser;
 
             // Create processor to extract raw data
-            // Buffer size 4096 is standard for good latency vs performance
             processorRef.current = audioContextRef.current.createScriptProcessor(4096, 1, 1);
 
             // Connect WS
             const ws = connectWebSocket((data) => {
-                handleServerMessage(data);
+                handleServerMessage({ ...data, source: 'live' });
             });
 
             ws.onopen = () => setIsConnected(true);
@@ -58,9 +59,6 @@ export default function Dashboard() {
 
             processorRef.current.onaudioprocess = (e) => {
                 const inputData = e.inputBuffer.getChannelData(0);
-                // Convert float32 to int16 for backend efficiency if needed, or send float32
-                // Backend expects bytes. Let's send raw float32 bytes or convert to int16.
-                // Sending int16 is more bandwidth efficient.
                 const pcmData = convertFloat32ToInt16(inputData);
 
                 if (ws.readyState === WebSocket.OPEN) {
@@ -68,16 +66,13 @@ export default function Dashboard() {
                 }
             };
 
-            // source -> analyser -> processor -> destination
-            // This ensures both get data. Processor needs destination connection to fire events in some browsers.
             analyser.connect(processorRef.current);
             processorRef.current.connect(audioContextRef.current.destination);
 
             setIsRecording(true);
-
         } catch (err) {
             console.error("Error starting recording:", err);
-            alert("Could not access microphone");
+            alert("Could not access microphone: " + (err.message || "Permission denied"));
         }
     };
 
@@ -94,23 +89,66 @@ export default function Dashboard() {
         disconnectWebSocket();
         setIsRecording(false);
         setIsConnected(false);
-        setCurrentResult(null);
-        // Analyser will be GC'd with context, or can store ref to disconnect if needed.
     };
 
     const handleServerMessage = (data) => {
         if (data.is_deepfake !== undefined) {
-            setCurrentResult(data);
-            setHistory(prev => [data, ...prev].slice(0, 50)); // Keep last 50
+            const formatted = {
+                ...data,
+                timestamp: new Date().toLocaleTimeString(),
+            };
+            setCurrentResult(formatted);
+            setHistory(prev => [formatted, ...prev].slice(0, 50));
         }
     };
 
-    // Helper
+    const handleFileUpload = async (event) => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+
+        setIsUploading(true);
+        setUploadError(null);
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        try {
+            const response = await fetch('/api/analyze', {
+                method: 'POST',
+                body: formData,
+            });
+
+            if (!response.ok) {
+                throw new Error(`Server responded with ${response.status}: ${response.statusText}`);
+            }
+
+            const data = await response.json();
+            if (data.error) {
+                throw new Error(data.error);
+            }
+
+            const formatted = {
+                ...data,
+                fileName: file.name,
+                source: 'file',
+                timestamp: new Date().toLocaleTimeString(),
+            };
+
+            setCurrentResult(formatted);
+            setHistory(prev => [formatted, ...prev].slice(0, 50));
+        } catch (err) {
+            console.error("Upload analysis error:", err);
+            setUploadError(err.message || "Failed to analyze file");
+        } finally {
+            setIsUploading(false);
+            if (fileInputRef.current) fileInputRef.current.value = '';
+        }
+    };
+
     const convertFloat32ToInt16 = (buffer) => {
         let l = buffer.length;
         let buf = new Int16Array(l);
         while (l--) {
-            // Clamp
             let s = Math.max(-1, Math.min(1, buffer[l]));
             buf[l] = s < 0 ? s * 0x8000 : s * 0x7FFF;
         }
@@ -125,32 +163,58 @@ export default function Dashboard() {
                     <h1 className="text-2xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
                         Deepfake Voice Guard
                     </h1>
-                    <p className="text-muted text-sm mt-1">Real-time VoIP Phishing & Deepfake Detection</p>
+                    <p className="text-muted text-sm mt-1">Real-time VoIP Phishing & Audio Deepfake Detection</p>
                 </div>
 
                 <div className="flex items-center gap-4">
                     <div className={`status-badge ${isConnected ? 'status-live' : 'status-offline'}`}>
                         <Activity size={16} />
-                        {isConnected ? 'LIVE MONITORING' : 'OFFLINE'}
+                        {isConnected ? 'LIVE MONITORING' : 'READY'}
                     </div>
+
+                    <input
+                        type="file"
+                        ref={fileInputRef}
+                        onChange={handleFileUpload}
+                        accept="audio/*,.wav,.mp3,.ogg,.flac,.m4a"
+                        style={{ display: 'none' }}
+                    />
+
+                    <button
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={isUploading}
+                        className="btn bg-gray-700 text-white flex items-center gap-2 hover:bg-gray-600"
+                    >
+                        {isUploading ? (
+                            <><Loader2 size={18} className="animate-spin" /> Analyzing...</>
+                        ) : (
+                            <><Upload size={18} /> Upload Audio File</>
+                        )}
+                    </button>
 
                     <button
                         onClick={toggleRecording}
                         className={`btn ${isRecording ? 'btn-danger' : 'btn-primary'} flex items-center gap-2`}
                     >
-                        {isRecording ? <><MicOff size={18} /> Stop Analysis</> : <><Mic size={18} /> Start Analysis</>}
+                        {isRecording ? <><MicOff size={18} /> Stop Live Mic</> : <><Mic size={18} /> Start Live Mic</>}
                     </button>
                 </div>
             </header>
 
+            {uploadError && (
+                <div className="p-3 mb-4 rounded-lg bg-red-500/20 border border-red-500/50 text-red-200 text-sm flex items-center gap-2">
+                    <AlertTriangle size={16} className="text-red-400" />
+                    <span>Upload Error: {uploadError}</span>
+                </div>
+            )}
+
             {/* Main Grid */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-
                 {/* Left Col: Visualizer & Status */}
                 <div className="lg:col-span-2 space-y-6">
                     <div className="card h-64 flex flex-col">
                         <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-                            <Radio size={20} className="text-primary" /> Audio Spectrum
+                            <Radio size={20} className="text-primary" /> Audio Spectrum & Signal
                         </h2>
                         <div className="flex-1 bg-black/20 rounded-lg overflow-hidden relative">
                             <AudioVisualizer isRecording={isRecording} analyser={analyserRef.current} />
@@ -164,7 +228,6 @@ export default function Dashboard() {
                 <div className="lg:col-span-1">
                     <AlertPanel history={history} />
                 </div>
-
             </div>
         </div>
     );

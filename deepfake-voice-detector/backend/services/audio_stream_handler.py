@@ -1,12 +1,12 @@
 import asyncio
 from loguru import logger
 import collections
-from services.detection_service import DetectionService
+from services.detection_service import get_detection_service
 from utils.config import settings
 
 class AudioStreamHandler:
     def __init__(self):
-        self.detection_service = DetectionService()
+        self.detection_service = get_detection_service()
         self.buffer = bytearray()
         # Ensure we have enough data for at least one chunk (e.g., 3 seconds at 16kHz, 16-bit)
         # 3 * 16000 * 2 bytes = 96000 bytes
@@ -28,7 +28,7 @@ class AudioStreamHandler:
             stride_bytes = self.chunk_size_bytes - self.overlap_bytes
             
             # Send to detection
-            result = await self.detection_service.process_audio_chunk(processing_data)
+            result = await self.detection_service.process_audio_chunk(bytes(processing_data))
             
             # Update buffer: remove the stride
             self.buffer = self.buffer[stride_bytes:]

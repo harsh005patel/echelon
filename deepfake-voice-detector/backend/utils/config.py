@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     
     # Model Settings
     MODEL_PATH: str = os.path.join("models", "weights")
+    MODEL_PATH_FALLBACK: str = "models"
     
     class Config:
         env_file = ".env"

@@ -1,8 +1,9 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 import uvicorn
 from contextlib import asynccontextmanager
+import io
 
 from utils.config import settings
 # Import routers and services
@@ -13,13 +14,11 @@ logger.add("logs/app.log", rotation="500 MB", level="INFO")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Load models, connect to DB, etc.
     logger.info("Starting up Deepfake Voice Detector...")
-    # Initialize global services if needed to persist models in memory
-    # For now, services instantiate models on init, which is fine (models are cached or lightweight enough? No, models should be singleton)
-    # The detector loads weights on init. It might be better to load once.
-    # But for now, we'll let each connection create a handler (which uses services).
-    # TODO: Refactor for singleton DetectionService if memory usage is an issue.
+    # Pre-load models at startup
+    from services.detection_service import get_detection_service
+    service = get_detection_service()
+    logger.info("Models loaded successfully.")
     yield
     logger.info("Shutting down...")
 
@@ -62,6 +61,14 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.error(f"WebSocket error: {e}")
         await websocket.close()
 
+@app.post(f"{settings.API_V1_STR}/analyze")
+async def analyze_audio(file: UploadFile = File(...)):
+    """Upload an audio file for deepfake analysis."""
+    from services.detection_service import get_detection_service
+    service = get_detection_service()
+    contents = await file.read()
+    result = await service.process_audio_chunk(contents)
+    return result
 
 if __name__ == "__main__":
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)

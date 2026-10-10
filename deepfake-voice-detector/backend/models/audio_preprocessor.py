@@ -15,11 +15,9 @@ class AudioPreprocessor:
     def load_audio(self, file_path_or_bytes):
         """Load audio from file path or bytes."""
         try:
-            if isinstance(file_path_or_bytes, bytes):
-                # Save bytes to temporary file or load directly if possible
-                # For simplicity, we assume file path or use torchaudio/librosa load
-                # Here we assume it's a file path for now, handling bytes needs io.BytesIO
-                pass 
+            import io
+            if isinstance(file_path_or_bytes, (bytes, bytearray)):
+                file_path_or_bytes = io.BytesIO(file_path_or_bytes)
             
             # Using librosa for robust loading
             y, sr = librosa.load(file_path_or_bytes, sr=self.sample_rate)
