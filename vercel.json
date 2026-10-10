@@ -19,8 +19,7 @@
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "/$1",
-      "service": "frontend"
+      "dest": "/$1"
     }
   ]
 }
