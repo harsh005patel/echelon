@@ -5,6 +5,39 @@ import DetectionStatus from './DetectionStatus';
 import AlertPanel from './AlertPanel';
 import { connectWebSocket, disconnectWebSocket } from '../services/webrtc';
 
+// Helper to encode Int16 PCM samples into standard 16kHz WAV Blob
+const encodeWAV = (samples, sampleRate = 16000) => {
+    const buffer = new ArrayBuffer(44 + samples.length * 2);
+    const view = new DataView(buffer);
+
+    const writeString = (offset, string) => {
+        for (let i = 0; i < string.length; i++) {
+            view.setUint8(offset + i, string.charCodeAt(i));
+        }
+    };
+
+    writeString(0, 'RIFF');
+    view.setUint32(4, 36 + samples.length * 2, true);
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); // PCM
+    view.setUint16(22, 1, true); // Mono
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true); // 16-bit
+    writeString(36, 'data');
+    view.setUint32(40, samples.length * 2, true);
+
+    let offset = 44;
+    for (let i = 0; i < samples.length; i++, offset += 2) {
+        view.setInt16(offset, samples[i], true);
+    }
+
+    return new Blob([buffer], { type: 'audio/wav' });
+};
+
 export default function Dashboard() {
     const [isRecording, setIsRecording] = useState(false);
     const [isConnected, setIsConnected] = useState(false);
@@ -13,16 +46,18 @@ export default function Dashboard() {
     const [history, setHistory] = useState([]);
     const [uploadError, setUploadError] = useState(null);
 
-    // Audio Refs
+    // Audio & Stream Refs
     const audioContextRef = useRef(null);
     const streamRef = useRef(null);
     const processorRef = useRef(null);
     const analyserRef = useRef(null);
     const fileInputRef = useRef(null);
+    const wsRef = useRef(null);
+    const recordedSamplesRef = useRef([]);
 
     const toggleRecording = async () => {
         if (isRecording) {
-            stopRecording();
+            await stopRecording();
         } else {
             await startRecording();
         }
@@ -30,6 +65,8 @@ export default function Dashboard() {
 
     const startRecording = async () => {
         try {
+            recordedSamplesRef.current = [];
+
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             streamRef.current = stream;
 
@@ -44,7 +81,7 @@ export default function Dashboard() {
 
             const source = audioCtx.createMediaStreamSource(stream);
 
-            // Create analyser for visualizer
+            // Analyser for spectrum visualizer
             const analyser = audioCtx.createAnalyser();
             analyser.fftSize = 256;
             source.connect(analyser);
@@ -58,22 +95,27 @@ export default function Dashboard() {
                 () => setIsConnected(true),
                 () => setIsConnected(false)
             );
+            wsRef.current = ws;
 
-            // Create processor to extract raw PCM
+            // Create processor to extract raw PCM (buffer 4096 = 256ms at 16kHz)
             const processor = audioCtx.createScriptProcessor(4096, 1, 1);
             processorRef.current = processor;
 
             processor.onaudioprocess = (e) => {
                 const inputData = e.inputBuffer.getChannelData(0);
-                const pcmData = convertFloat32ToInt16(inputData);
+                const pcmBuffer = convertFloat32ToInt16(inputData);
 
+                // Accumulate samples for end-of-capture analysis
+                const int16Array = new Int16Array(pcmBuffer);
+                recordedSamplesRef.current.push(int16Array);
+
+                // Send real-time chunks over WebSocket
                 if (ws && ws.readyState === WebSocket.OPEN) {
-                    ws.send(pcmData);
+                    ws.send(pcmBuffer);
                 }
             };
 
-            // Connect: source -> analyser -> processor -> silentGain -> destination
-            // Using silent GainNode prevents microphone feedback loop into computer speakers
+            // Prevent audio feedback loop into speakers with silent GainNode
             const silentGain = audioCtx.createGain();
             silentGain.gain.value = 0;
 
@@ -88,7 +130,15 @@ export default function Dashboard() {
         }
     };
 
-    const stopRecording = () => {
+    const stopRecording = async () => {
+        // 1. Send stop action to backend stream handler
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            try {
+                wsRef.current.send(JSON.stringify({ action: "stop" }));
+            } catch (_) {}
+        }
+
+        // 2. Stop tracks & processor
         if (streamRef.current) {
             streamRef.current.getTracks().forEach(track => track.stop());
             streamRef.current = null;
@@ -101,8 +151,58 @@ export default function Dashboard() {
             try { audioContextRef.current.close(); } catch (_) {}
             audioContextRef.current = null;
         }
-        disconnectWebSocket();
+
         setIsRecording(false);
+
+        // 3. Process complete captured audio buffer immediately
+        const chunks = recordedSamplesRef.current;
+        recordedSamplesRef.current = [];
+
+        if (chunks && chunks.length > 0) {
+            const totalSamples = chunks.reduce((acc, c) => acc + c.length, 0);
+
+            // If at least ~0.3s of audio was captured (4800 samples at 16kHz)
+            if (totalSamples >= 4800) {
+                setIsUploading(true);
+                const merged = new Int16Array(totalSamples);
+                let offset = 0;
+                for (const chunk of chunks) {
+                    merged.set(chunk, offset);
+                    offset += chunk.length;
+                }
+
+                const wavBlob = encodeWAV(merged, 16000);
+                const formData = new FormData();
+                formData.append('file', wavBlob, 'live_recording.wav');
+
+                try {
+                    const response = await fetch('/api/analyze', {
+                        method: 'POST',
+                        body: formData,
+                    });
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data.is_deepfake !== undefined) {
+                            const formatted = {
+                                ...data,
+                                fileName: 'Captured Voice Clip',
+                                source: 'live',
+                                timestamp: new Date().toLocaleTimeString(),
+                            };
+                            setCurrentResult(formatted);
+                            setHistory(prev => [formatted, ...prev].slice(0, 50));
+                        }
+                    }
+                } catch (err) {
+                    console.error("Finalizing live capture error:", err);
+                } finally {
+                    setIsUploading(false);
+                }
+            }
+        }
+
+        disconnectWebSocket();
         setIsConnected(false);
     };
 
@@ -209,6 +309,7 @@ export default function Dashboard() {
 
                     <button
                         onClick={toggleRecording}
+                        disabled={isUploading}
                         className={`btn ${isRecording ? 'btn-danger' : 'btn-primary'} flex items-center gap-2`}
                     >
                         {isRecording ? <><MicOff size={18} /> Stop Live Mic</> : <><Mic size={18} /> Start Live Mic</>}

@@ -6,7 +6,6 @@ from contextlib import asynccontextmanager
 import io
 
 from utils.config import settings
-# Import routers and services
 from services.audio_stream_handler import AudioStreamHandler
 
 # Configure logging
@@ -31,7 +30,7 @@ app = FastAPI(
 # CORS Setup
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify frontend domain
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -48,18 +47,26 @@ async def websocket_endpoint(websocket: WebSocket):
     
     try:
         while True:
-            data = await websocket.receive_bytes()
-            # Process audio stream
-            result = await stream_handler.process_stream(data)
-            
-            if result:
-                await websocket.send_json(result)
+            message = await websocket.receive()
+            if "bytes" in message and message["bytes"]:
+                data = message["bytes"]
+                result = await stream_handler.process_stream(data)
+                if result:
+                    await websocket.send_json(result)
+            elif "text" in message and message["text"]:
+                # Client sent control message (e.g. stop / finalize)
+                result = await stream_handler.flush()
+                if result:
+                    await websocket.send_json(result)
             
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected")
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
-        await websocket.close()
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 @app.post(f"{settings.API_V1_STR}/analyze")
 async def analyze_audio(file: UploadFile = File(...)):
